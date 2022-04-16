@@ -4,6 +4,8 @@
   "description": "Customer Service",
   "main": "app.js",
   "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
     "test": "jest"
   },
   "repository": {

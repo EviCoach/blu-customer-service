@@ -1,10 +1,11 @@
 const { Http } = require('@status/codes');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { EMIT } = require('../../config/constants');
-const config = require('../../config/devConf');
-const { Emitter } = require("../../startups/listeners");
-const userRepository = require('../user/user_repository');
+const { Op } = require('sequelize');
+const { EMIT, TOKEN_KEY } = require('../../config/constants');
+const { Emitter } = require('../../startups/listeners');
+const customerRepository = require('../customer/customer_repository');
+const { validateEmail } = require('../customer/customer_validator');
 
 /*
 Get user input.
@@ -18,28 +19,40 @@ And finally, create a signed JWT token.
 const authRepository = require('./auth_repository');
 
 exports.login = async (req, res, next) => {
-    const { name, email, password } = req.body;
-    const userAuth = await authRepository.findOne({ email });
-    if (!userAuth) return res.status(Http.NotFound).json({
-        message: "User with this email does not exist"
-    });
-    if (!userAuth.verified) {
+    const { userId, password } = req.body;
+    const isEmail = validateEmail(userId);
+    let customerAuth;
+    if (isEmail) {
+        customerAuth = await authRepository.findOne({ email: userId });
+        if (!customerAuth) return res.status(Http.NotFound).json({
+            message: "User with this email does not exist. Signup"
+        });
+    }
+
+    if (!isEmail) {
+        customerAuth = await authRepository.findOne({ phonenumber: userId });
+        if (!customerAuth) return res.status(Http.NotFound).json({
+            message: "User with this phone number does not exist. Signup"
+        });
+    }
+
+    if (!customerAuth.verified) {
         return res.status(Http.Forbidden).json({
             error: "Please verify your account!"
         });
     }
-    const isValid = await bcrypt.compare(password, userAuth.password);
+    const isValid = await bcrypt.compare(password, customerAuth.password);
 
     if (!isValid) {
         return res.status(Http.Forbidden).json({
             message: "Invalid username or password"
         });
     }
-    let user = await userRepository.findOne({ email });
+    let user = await customerRepository.findOne({ email: customerAuth.email });
     user = JSON.parse(JSON.stringify(user));
     console.log("User json ", user);
 
-    const token = jwt.sign(user, config.TOKEN_KEY, { expiresIn: "2h" });
+    const token = jwt.sign(user, TOKEN_KEY, { expiresIn: "2h" });
     user.token = token;
 
     res.json({ message: "Login success", data: user });
@@ -47,11 +60,14 @@ exports.login = async (req, res, next) => {
 
 exports.signup = async (req, res, next) => {
     try {
-
-
-        const { email, password } = req.body;
-        const name = email.split("@")[0];
-        let auth = await authRepository.findOne({ email });
+        const { firstName, lastName, email, phonenumber, password } = req.body;
+        // const name = email.split("@")[0];
+        let auth = await authRepository.findOne({
+            [Op.or]: [
+                { email },
+                { phonenumber }
+            ]
+        });
         if (auth) {
             return res.status(Http.BadRequest).json({
                 message: "User already exists. Please login."
@@ -62,17 +78,19 @@ exports.signup = async (req, res, next) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         auth = await authRepository.create({
             email,
+            phonenumber,
             password: hashedPassword
         });
 
         console.log("Created user: ", auth);
-        Emitter.emit(EMIT.USER.CREATED, { name, email });
+        Emitter.emit(EMIT.CUSTOMER.CREATED, { firstName, lastName, email, phonenumber });
         res.json({
             message: "User created",
             data: auth
         });
     } catch (err) {
-        throw new Error(err);
+        // throw new Error(err);
+        next(err);
     }
 }
 
@@ -85,17 +103,16 @@ exports.code = async (req, res, next) => {
 }
 
 exports.verify = async (req, res, next) => {
-    const authId = req.params.authId;
+    const { uuid } = req.params;
     try {
-
-
-        if (!authId) {
+        const customerAuth = await authRepository.findOne({ uuid });
+        if (!customerAuth) {
             return res.status(Http.BadRequest).json({
                 "error": "User with this id does not exist"
             });
         }
 
-        await authRepository.update({ uuid: authId }, {
+        await authRepository.update({ uuid }, {
             verified: true
         });
 
@@ -103,6 +120,6 @@ exports.verify = async (req, res, next) => {
             message: "User verified successfully",
         });
     } catch (err) {
-        throw new Error(err);
+        next(err);
     }
 }
